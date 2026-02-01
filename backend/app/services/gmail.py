@@ -19,16 +19,16 @@ async def get_emails(
     query: str = "",
     start_date: str = "",
     end_date: str = "",
-    max_results: int = 25,
+    max_results: int = 50,
 ) -> list[dict[str, Any]]:
     """
-    Get emails from the user's inbox, optionally filtered by a query and date range.
+    Get emails with optional search query and date range.
     
     Args:
-        query: Optional Gmail search query (e.g., 'from:someone@example.com', 'subject:meeting').
-               Empty string returns recent inbox emails.
-        start_date: Start date in YYYY-MM-DD format (defaults to today)
-        end_date: End date in YYYY-MM-DD format (defaults to 7 days from start_date)
+        query: Search query (e.g., 'from:john', 'subject:meeting', 'Createbase').
+               Empty string returns all emails in date range.
+        start_date: Start date in YYYY-MM-DD format (defaults to 30 days ago)
+        end_date: End date in YYYY-MM-DD format (defaults to today)
         max_results: Maximum number of emails to return.
     """
     access_token = await get_valid_google_token(user_id, db)
@@ -42,25 +42,25 @@ async def get_emails(
     # Build the search query with date filters
     now = datetime.utcnow()
     
-    # Parse start_date or default to today
+    # Parse start_date or default to 30 days ago (emails often need wider lookback)
     if start_date:
         try:
             start_dt = datetime.strptime(start_date, "%Y-%m-%d")
         except ValueError:
-            print(f"[Gmail] Invalid start_date format: {start_date}, using today")
-            start_dt = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            print(f"[Gmail] Invalid start_date format: {start_date}, using 30 days ago")
+            start_dt = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=30)
     else:
-        start_dt = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_dt = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=30)
     
-    # Parse end_date or default to 7 days from start
+    # Parse end_date or default to today
     if end_date:
         try:
             end_dt = datetime.strptime(end_date, "%Y-%m-%d")
         except ValueError:
-            print(f"[Gmail] Invalid end_date format: {end_date}, using 7 days from start")
-            end_dt = start_dt + timedelta(days=7)
+            print(f"[Gmail] Invalid end_date format: {end_date}, using today")
+            end_dt = now.replace(hour=0, minute=0, second=0, microsecond=0)
     else:
-        end_dt = start_dt + timedelta(days=7)
+        end_dt = now.replace(hour=0, minute=0, second=0, microsecond=0)
     
     # Gmail uses after: and before: with YYYY/MM/DD format
     date_query_parts = []

@@ -58,20 +58,15 @@ class ChatResponse(BaseModel):
     tool_calls: list[ToolCallInfo] = []  # Detailed tool call info for history
 
 
-# Define the tools the LLM can use
 TOOLS = [
     {
         "type": "function",
         "function": {
             "name": "get_calendar_events",
-            "description": "Get calendar events. Can list all events or search for specific ones. Time range is from 12:00 AM of start_date to 11:59 PM of end_date.",
+            "description": "Get ALL calendar events in a date range. Returns every event - YOU must filter/analyze the results yourself. Time range is from 12:00 AM of start_date to 11:59 PM of end_date.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Optional search term to filter events by name (leave empty to get all events)",
-                    },
                     "start_date": {
                         "type": "string",
                         "description": "Start date in YYYY-MM-DD format (defaults to today)",
@@ -79,10 +74,6 @@ TOOLS = [
                     "end_date": {
                         "type": "string",
                         "description": "End date in YYYY-MM-DD format (defaults to 7 days from start_date)",
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Maximum number of events to return (default 25)",
                     },
                 },
                 "required": [],
@@ -93,28 +84,24 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_emails",
-            "description": "Get emails from the user's inbox. Can list recent emails or search for specific ones using Gmail query syntax. Time range is from start_date to end_date.",
+            "description": "Search emails with a query. Use specific, targeted queries based on what you've learned (e.g., company name, person's name). Default date range is last 30 days.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Optional search query (e.g., 'from:someone@example.com', 'subject:meeting', 'is:unread'). Leave empty to get recent inbox emails.",
+                        "description": "Search query - empty string for all emails, or use specific terms like company names, person names, or topics (e.g., 'Amazon', 'from:john', 'interview'). Be specific!",
                     },
                     "start_date": {
                         "type": "string",
-                        "description": "Start date in YYYY-MM-DD format (defaults to today)",
+                        "description": "Start date in YYYY-MM-DD format (defaults to 30 days ago)",
                     },
                     "end_date": {
                         "type": "string",
-                        "description": "End date in YYYY-MM-DD format (defaults to 7 days from start_date)",
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Maximum number of emails to return (default 25)",
+                        "description": "End date in YYYY-MM-DD format (defaults to today)",
                     },
                 },
-                "required": [],
+                "required": ["query"],
             },
         },
     },
@@ -416,13 +403,10 @@ SYSTEM_PROMPT_WITH_TOOLS = """You are a helpful digital assistant that acts as t
 You have access to their connected services (Google Calendar, Gmail, Notion) and can help them manage their digital life.
 
 GOOGLE CALENDAR & GMAIL:
-- View upcoming calendar events and meetings
-- Search for specific events
-- Create new calendar events
-- Edit existing events (change time, title, location, etc.)
-- Share events by inviting people via email
-- Delete events
-- Read and search emails
+- get_calendar_events returns ALL events in a date range - YOU must filter/analyze results
+- get_emails returns ALL emails in a date range - YOU must filter/analyze results
+- Create, edit, share, and delete calendar events
+- Get full email content or entire email threads
 
 NOTION (if connected):
 - Search for pages
@@ -432,82 +416,97 @@ NOTION (if connected):
 - Update or delete individual blocks
 - Delete (archive) pages
 
-IMPORTANT - Notion content formatting:
-When creating or updating Notion content, use PLAIN TEXT only. Do NOT use markdown formatting (no **, #, -, etc.) as Notion's API does not render markdown - it will appear as literal characters.
+=== HOW CALENDAR AND EMAIL RETRIEVAL WORKS ===
 
-IMPORTANT - Notion updates workflow:
-Before making ANY update to a Notion page (updating blocks, deleting blocks, modifying content), you MUST first call get_notion_page to see the current page contents. Never update or delete blocks blindly - always fetch the page first to see what's there, then decide what to modify.
+CALENDAR: get_calendar_events returns ALL events in the date range. YOU analyze the results.
 
-IMPORTANT - Adding vs Creating in Notion:
-- "Add to a page" / "Add content" / "Write in my page" → Use update_notion_page with append_content to add blocks to an EXISTING page
-- "Create a page" / "Make a new page" → Use create_notion_page to create a NEW page
-Only create a new page when the user EXPLICITLY asks to create one. Adding content to an existing page is NOT creating a page.
+EMAIL: get_emails requires a search query. Use SPECIFIC, TARGETED queries.
 
-IMPORTANT - Always ask for missing information:
+=== SMART FOLLOW-UP SEARCHES - CRITICAL ===
 
-CLARIFYING "MEETINGS"!!!!
-When a user asks about "meetings", clarify what they mean:
-  - Events with multiple attendees/invites (actual meetings with other people)?
-  - Or any calendar event in the time range (including personal reminders, solo blocks, etc.)?
-  Example: "Show me my meetings this week" → Ask: "Would you like to see only events with other attendees, or all calendar events?"
+When you learn new information from one tool call, USE IT to make smarter subsequent calls.
 
-To CREATE an event, you need: the event name, date, and time. If any are missing, ask.
+GOOD Example: User asks "Tell me about my interview Monday"
+1. get_calendar_events(start_date="2026-02-02", end_date="2026-02-02")
+2. Find: "Interview with Amazon - Round 3" with attendees arsh@amazon.com
+3. NOW search emails with what you learned:
+   - get_emails(query="Amazon") ← Use the COMPANY NAME, not "interview"
+   - This finds all Amazon correspondence, interview details, prep materials
+
+BAD Example (what NOT to do):
+1. get_calendar_events → Find "Interview with Amazon"
+2. get_emails(query="interview") ← TOO GENERIC, returns unrelated job alerts
+3. Report a bunch of irrelevant emails
+
+RULES FOR EMAIL SEARCHES:
+- Use SPECIFIC terms: company names, person names, project names
+- Prefer names/entities over generic words like "interview", "meeting", "project"
+- If calendar event has attendees, search for their name or email domain
+- Default date range is 30 days ago to today - widen if needed for historical context
+
+=== MISSING INFORMATION ===
+
+To CREATE an event, you need: event name, date, and time. If any are missing, ask.
   Example: "Create a meeting called standup" → Ask: "When should I schedule this?"
 
-To EDIT, SHARE, or DELETE an event, you need to know which event. If unclear, search first.
-  Example: "Delete my appointment" → Search for it first to find the event ID. Once you have found some candidates, show them to the user for verification, then delete as deleting anything is be a CRITICAL action.
+To EDIT, SHARE, or DELETE an event, first get all events, find the one matching the user's description, 
+then confirm with them before taking action (especially for DELETE - this is a CRITICAL action).
 
 To SHARE an event, you need the person's email address.
   Example: "Invite John to my meeting" → Ask: "What is John's email address?"
 
-If the user doesn't specify how long an event should be FIRST ASK. If they still dont comply, assume 1 hour.
+If the user doesn't specify how long an event should be, FIRST ASK. If they don't answer, assume 1 hour.
 
-SEARCHING FOR EVENTS - CRITICAL: The search is case-sensitive and exact. You MUST try multiple variations before concluding no events exist:
+=== CLARIFYING "MEETINGS" ===
 
-1. First try the exact term the user mentioned
-2. If 0 results, IMMEDIATELY try variations (shorter keywords, single words)
-3. If still 0 results, IMMEDIATELY try an EMPTY query "" to list ALL events
-4. Only after trying at least 3 different queries can you say "no events found"
-5. Maximum 5 search attempts per request
+When a user asks about "meetings", clarify:
+  - Events with multiple attendees (actual meetings with other people)?
+  - Or ALL calendar events (including personal reminders, blocks, etc.)?
 
-DO NOT respond with "no events found" after only 1 search attempt. KEEP TRYING.
+=== NOTION GUIDELINES ===
 
-Example: User says "find my dentist appointment"
-  - Call: get_calendar_events(query="dentist appointment") → 0 results
-  - Call: get_calendar_events(query="dentist") → 0 results  
-  - Call: get_calendar_events(query="") → [shows all events] → scan for dentist-related
-  - Now you can respond with confidence
+Content formatting: Use PLAIN TEXT only. No markdown (**, #, -, etc.) - Notion won't render it.
 
-SEARCHING FOR EMAILS - Same principle applies:
+Before updating a Notion page: ALWAYS call get_notion_page first to see current content.
 
-1. First try the exact term the user mentioned
-2. If 0 results, try variations (simpler keywords, different phrasing)
-3. If still 0 results, try an EMPTY query "" to get recent inbox emails
-4. Only after trying at least 3 different queries can you say "no emails found"
-5. Maximum 5 search attempts per request
+"Add content to page" → Use update_notion_page with append_content
+"Create a new page" → Use create_notion_page
 
-Example: User says "find emails from John about the project"
-  - Call: get_emails(query="from:john project") → 0 results
-  - Call: get_emails(query="from:john") → 0 results
-  - Call: get_emails(query="project") → [shows emails] → scan for John
-  - Now you can respond with confidence
+=== COMPREHENSIVE QUERIES ===
 
-When responding, format dates and times in a human-readable way (e.g., "Tomorrow at 3:00 PM").
+When users ask for "information about X", "tell me about X", "prepare for X":
+1. Get calendar events in relevant date range → find the specific event
+2. Extract SPECIFIC info from the event (company name, attendee names, etc.)
+3. Search emails using those SPECIFIC terms (not generic words)
+4. Search Notion using specific terms
+5. ONLY report information that is actually relevant to X
 
-COMPREHENSIVE QUERIES - CRITICAL:
-When users ask for "information about", "all information about", "everything about", "tell me about", "what do I have about", "how to prepare for", or similar comprehensive requests:
-1. Search ALL connected services (Calendar, Gmail, AND Notion) for related information
-2. Do NOT stop after searching one source - always check ALL available backends
-3. For any topic X:
-   - Check calendar for events related to X
-   - Search emails for correspondence about X
-   - Search Notion for pages/notes about X
-4. Combine information from ALL sources in your response
-5. Example: "Tell me about my meeting with Acme Corp"
-   - get_calendar_events(query="Acme") → get event details
-   - get_emails(query="Acme") → find related emails, then get_email_thread for full context
-   - search_notion(query="Acme") → find any notes or pages
-   - Combine ALL findings in response
+Example: "Tell me about my interview Monday"
+1. get_calendar_events → Find "Amazon Round 3 Interview"
+2. get_emails(query="Amazon") → Find Amazon-related emails only
+3. search_notion(query="Amazon") → Find any Amazon notes
+4. Report ONLY Amazon-related findings
+
+DO NOT include unrelated emails/events just because they exist in the date range.
+
+=== FORMATTING RESPONSES WITH SOURCES ===
+
+ALWAYS include clickable markdown links to sources when available:
+
+Calendar events have html_link → [Event Title](html_link)
+Emails have id and thread_id → mention "Email from [sender] on [date]"
+Notion pages have url → [Page Title](url)
+
+Example response format:
+"Your interview is scheduled for **Monday at 11am**:
+- 📅 [Createbase Round 3 Interview](https://calendar.google.com/...)
+- 👥 Attendees: arsh@createbase.com, ada@createbase.com
+
+Related emails from Createbase:
+- Email from Ada Chen on Jan 28: 'Looking forward to meeting you...'
+- Email from HR on Jan 25: 'Interview confirmation...'"
+
+Format dates/times in human-readable form (e.g., "Tomorrow at 3:00 PM").
 
 Current date and time: {current_time}
 """
@@ -533,16 +532,11 @@ async def execute_tool(
             events = await get_events(
                 user_id=user_id,
                 db=db,
-                query=arguments.get("query", ""),
                 start_date=arguments.get("start_date", ""),
                 end_date=arguments.get("end_date", ""),
-                max_results=arguments.get("max_results", 25),
             )
             if not events:
-                query = arguments.get("query", "")
-                if query:
-                    return f"No events found matching '{query}'. TRY AGAIN with a different query (shorter keyword or empty query to list all events)."
-                return "No events found for this time period. TRY AGAIN with a wider date range or empty query."
+                return "No calendar events found in this date range."
             return json.dumps(events, indent=2)
         
         elif tool_name == "get_emails":
@@ -552,13 +546,10 @@ async def execute_tool(
                 query=arguments.get("query", ""),
                 start_date=arguments.get("start_date", ""),
                 end_date=arguments.get("end_date", ""),
-                max_results=arguments.get("max_results", 25),
             )
             if not emails:
                 query = arguments.get("query", "")
-                if query:
-                    return f"No emails found matching '{query}'. TRY AGAIN with a different query (simpler keywords, different phrasing, or empty query to list recent emails)."
-                return "No recent emails found, or Gmail is not connected."
+                return f"No emails found matching '{query}'. Try a different search term or wider date range."
             return json.dumps(emails, indent=2)
         
         elif tool_name == "get_email_content":
@@ -738,24 +729,30 @@ async def chat(
     chat_request: ChatRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Send a message to the digital twin chatbot"""
+    """Main chat endpoint"""
     try:
         user_id = get_optional_user_id(request)
         
+        # === LOG: Request received ===
+        print("\n" + "="*60)
+        print("[CHAT] New request received")
+        print(f"[CHAT] User ID: {user_id or 'anonymous'}")
+        print(f"[CHAT] Message: {chat_request.message}")
+        print(f"[CHAT] History length: {len(chat_request.history)} messages")
+        
         if not settings.openai_api_key:
-            raise HTTPException(
-                status_code=500, 
-                detail="OpenAI API key not configured. Add OPENAI_API_KEY to your .env file."
-            )
+            print("[CHAT] ERROR: OpenAI API key not configured")
+            raise HTTPException(status_code=500, detail="OpenAI API key not configured")
         
         client = AsyncOpenAI(api_key=settings.openai_api_key)
         
-        # Choose system prompt and tools based on whether user has connections
         has_connections = user_id is not None
         system_prompt = SYSTEM_PROMPT_WITH_TOOLS if has_connections else SYSTEM_PROMPT_NO_TOOLS
         tools_to_use = TOOLS if has_connections else None
+        
+        print(f"[CHAT] Has connections: {has_connections}")
+        print(f"[CHAT] Tools available: {len(TOOLS) if tools_to_use else 0}")
 
-        # Build messages with conversation history
         messages = [
             {
                 "role": "system",
@@ -765,13 +762,12 @@ async def chat(
             },
         ]
         
-        # Add conversation history (limit to last 20 messages to avoid token limits)
+        # Reconstruct conversation history
         for msg in chat_request.history[-20:]:
             if msg.role == "user":
                 messages.append({"role": "user", "content": msg.content})
             elif msg.role == "assistant":
                 if msg.tool_calls and len(msg.tool_calls) > 0:
-                    # Reconstruct the assistant message with tool calls
                     tool_calls_for_api = [
                         {
                             "id": tc.id or f"call_{i}",
@@ -788,7 +784,6 @@ async def chat(
                         "content": msg.content or None,
                         "tool_calls": tool_calls_for_api,
                     })
-                    # Add tool results
                     for tc in msg.tool_calls:
                         messages.append({
                             "role": "tool",
@@ -798,15 +793,13 @@ async def chat(
                 else:
                     messages.append({"role": "assistant", "content": msg.content})
         
-        # Add current message
         messages.append({"role": "user", "content": chat_request.message})
         
         context_used = []
-        tool_calls_log = []  # Track detailed tool calls
+        tool_calls_log = []
         
-        # Initial completion
         completion_kwargs = {
-            "model": "gpt-4o-mini",
+            "model": "gpt-5-nano",
             "messages": messages,
         }
         
@@ -814,11 +807,25 @@ async def chat(
             completion_kwargs["tools"] = tools_to_use
             completion_kwargs["tool_choice"] = "auto"
         
+        # === LOG: Sending to LLM ===
+        print(f"[LLM] Sending {len(messages)} messages to OpenAI...")
+        
         response = await client.chat.completions.create(**completion_kwargs)
         assistant_message = response.choices[0].message
         
-        # Handle tool calls if any (only possible if user has connections)
+        # === LOG: Initial LLM response ===
+        if assistant_message.tool_calls:
+            print(f"[LLM] Response: {len(assistant_message.tool_calls)} tool call(s) requested")
+        else:
+            preview = (assistant_message.content or "")[:100]
+            print(f"[LLM] Response: {preview}...")
+        
+        # Tool call loop
+        iteration = 0
         while has_connections and assistant_message.tool_calls:
+            iteration += 1
+            print(f"\n[CHAIN] === Tool Call Iteration {iteration} ===")
+            
             messages.append(assistant_message)
             
             for tool_call in assistant_message.tool_calls:
@@ -827,17 +834,14 @@ async def chat(
                 
                 context_used.append(tool_name)
                 
-                # Log the tool call
-                print(f"[LLM] Calling tool: {tool_name}")
-                print(f"[LLM]   Arguments: {json.dumps(arguments, indent=2)}")
+                print(f"[TOOL] Calling: {tool_name}")
+                print(f"[TOOL] Args: {json.dumps(arguments)}")
                 
                 result = await execute_tool(tool_name, arguments, user_id, db)
                 
-                # Truncate result for logging (can be long)
-                result_preview = result[:200] + "..." if len(result) > 200 else result
-                print(f"[LLM]   Result: {result_preview}")
+                result_preview = result[:300] + "..." if len(result) > 300 else result
+                print(f"[TOOL] Result preview: {result_preview}")
                 
-                # Store for response (include ID for history reconstruction)
                 tool_calls_log.append(ToolCallInfo(
                     id=tool_call.id,
                     name=tool_name,
@@ -851,12 +855,25 @@ async def chat(
                     "content": result,
                 })
             
-            # Get next response
+            print(f"[LLM] Sending tool results back to OpenAI...")
             response = await client.chat.completions.create(**completion_kwargs)
             assistant_message = response.choices[0].message
+            
+            if assistant_message.tool_calls:
+                print(f"[LLM] Response: {len(assistant_message.tool_calls)} more tool call(s)")
+            else:
+                print(f"[LLM] Response: Final answer ready")
+        
+        # === LOG: Final response ===
+        final_response = assistant_message.content or "I couldn't generate a response."
+        print(f"\n[CHAT] === Final Response ===")
+        print(f"[CHAT] Tools used: {context_used}")
+        print(f"[CHAT] Response length: {len(final_response)} chars")
+        print(f"[CHAT] Response preview: {final_response[:200]}...")
+        print("="*60 + "\n")
         
         return ChatResponse(
-            response=assistant_message.content or "I couldn't generate a response.",
+            response=final_response,
             context_used=context_used,
             tool_calls=tool_calls_log,
         )
@@ -864,7 +881,5 @@ async def chat(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error: {str(e)}"
-        )
+        print(f"[CHAT] ERROR: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")

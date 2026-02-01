@@ -15,19 +15,17 @@ CALENDAR_API_BASE = "https://www.googleapis.com/calendar/v3"
 async def get_events(
     user_id: str,
     db: AsyncSession,
-    query: str = "",
     start_date: str = "",
     end_date: str = "",
-    max_results: int = 25,
+    max_results: int = 50,
 ) -> list[dict[str, Any]]:
     """
-    Get calendar events with optional search query and date range.
-    - query: Optional search term to filter events by name
+    Get ALL calendar events in a date range. No filtering - returns everything.
     - start_date: Start date in YYYY-MM-DD format (defaults to today)
     - end_date: End date in YYYY-MM-DD format (defaults to 7 days from start_date)
     - Time range is always from 12:00 AM of start_date to 11:59 PM of end_date
     """
-    print(f"[Calendar] Getting events (query='{query}', start_date='{start_date}', end_date='{end_date}')")
+    print(f"[Calendar] Getting ALL events (start_date='{start_date}', end_date='{end_date}')")
     
     access_token = await get_valid_google_token(user_id, db)
     
@@ -65,7 +63,7 @@ async def get_events(
     
     print(f"[Calendar] Time range: {time_min} to {time_max}")
     
-    # Build params
+    # Build params - no query filter, get ALL events
     params = {
         "maxResults": max_results,
         "singleEvents": "true",
@@ -73,10 +71,6 @@ async def get_events(
         "timeMin": time_min,
         "timeMax": time_max,
     }
-    
-    # Only add query param if provided
-    if query:
-        params["q"] = query
     
     async with httpx.AsyncClient() as client:
         response = await client.get(
