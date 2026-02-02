@@ -138,7 +138,20 @@ User Browser          Your Backend           OAuth Provider
 - Node.js 20+
 - Docker (for PostgreSQL)
 
-### 1. Clone & Setup Backend
+### 1. Set Up OAuth Apps
+
+**Google Cloud Console** (https://console.cloud.google.com):
+1. Create a new project
+2. Enable Google Calendar API & Gmail API
+3. Configure OAuth consent screen
+4. Create OAuth 2.0 credentials (Web application)
+5. Add redirect URI: `http://localhost:8000/auth/google/callback`
+
+**Notion Developers** (https://www.notion.so/my-integrations):
+1. Create a new public integration
+2. Add redirect URI: `http://localhost:8000/auth/notion/callback`
+
+### 2. Clone & Setup Backend
 
 ```bash
 cd backend
@@ -147,7 +160,7 @@ cd backend
 pip install -r requirements.txt
 ```
 
-### 2. Configure Environment
+### 3. Configure Environment
 
 Create `backend/.env`:
 
@@ -169,31 +182,15 @@ FRONTEND_URL=http://localhost:5173
 BACKEND_URL=http://localhost:8000
 ```
 
-### 3. Set Up OAuth Apps
-
-**Google Cloud Console** (https://console.cloud.google.com):
-1. Create a new project
-2. Enable Google Calendar API & Gmail API
-3. Configure OAuth consent screen
-4. Create OAuth 2.0 credentials (Web application)
-5. Add redirect URI: `http://localhost:8000/auth/google/callback`
-
-**Notion Developers** (https://www.notion.so/my-integrations):
-1. Create a new public integration
-2. Add redirect URI: `http://localhost:8000/auth/notion/callback`
-
 ### 4. Start Services
 
 ```bash
 # Terminal 1: Start PostgreSQL
-docker compose up -d
-
-# Terminal 2: Start backend
 cd backend
-source venv/bin/activate
+docker compose up -d
 uvicorn app.main:app --reload --port 8000
 
-# Terminal 3: Start frontend
+# Terminal 2: Start frontend
 cd frontend
 npm install
 npm run dev
