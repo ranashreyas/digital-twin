@@ -1,10 +1,10 @@
 # Digital Twin Chatbot
 
-A React-based chatbot that acts as your "digital twin" - connecting to your Google Calendar, Gmail, and Notion to provide a unified conversational interface to your digital life.
+A React-based chatbot that acts as your "digital twin" connecting to your Google Calendar, Gmail, and Notion to provide a unified conversational interface to your digital life.
 
 ---
 
-## 🏗️ Architecture Overview
+## Architecture Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -37,16 +37,16 @@ A React-based chatbot that acts as your "digital twin" - connecting to your Goog
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                    EXTERNAL SERVICES                            │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐   │
-│  │ Google   │    │ Google   │    │ Notion   │    │ OpenAI   │   │
-│  │ Calendar │    │ Gmail    │    │          │    │ GPT-4o   │   │
-│  └──────────┘    └──────────┘    └──────────┘    └──────────┘   │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌────────────┐ │
+│  │ Google   │    │ Google   │    │ Notion   │    │ OpenAI     │ │
+│  │ Calendar │    │ Gmail    │    │          │    │ GPT-5-nano | │
+│  └──────────┘    └──────────┘    └──────────┘    └────────────┘ │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🛠️ Technology Stack
+## Tech Stack
 
 ### Frontend
 | Technology | Purpose |
@@ -54,24 +54,20 @@ A React-based chatbot that acts as your "digital twin" - connecting to your Goog
 | **React 18** | UI framework |
 | **JavaScript** | Language |
 | **Vite** | Build tool & dev server |
-| **TailwindCSS** | Styling |
-| **react-markdown** | Markdown rendering |
 
 ### Backend
 | Technology | Purpose |
 |------------|---------|
 | **Python 3.11+** | Runtime |
 | **FastAPI** | Async web framework |
-| **SQLAlchemy** | ORM for database |
 | **PostgreSQL** | Database (users, encrypted tokens) |
-| **Pydantic** | Data validation |
-| **cryptography** | Token encryption at rest (Fernet) |
+| **cryptography** | Token Fernet encryption |
 | **httpx** | Async HTTP client |
 | **OpenAI SDK** | LLM integration |
 
 ---
 
-## 🔐 OAuth2 Flow
+## OAuth2 Flow
 
 ### How It Works
 
@@ -101,16 +97,6 @@ User Browser          Your Backend           OAuth Provider
      │<────────────────────│                      │
 ```
 
-### Services & Scopes
-
-| Service | OAuth Provider | Scopes |
-|---------|----------------|--------|
-| **Google Calendar** | Google OAuth2 | `calendar.readonly`, `calendar.events` |
-| **Gmail** | Google OAuth2 | `gmail.readonly` |
-| **Notion** | Notion OAuth2 | Full workspace access |
-
-> **Note:** Google Calendar and Gmail share the same OAuth flow - one "Connect Google" handles both.
-
 ### Token Storage
 
 ```
@@ -118,10 +104,9 @@ User Browser          Your Backend           OAuth Provider
 │              users table                    │
 ├─────────────────────────────────────────────┤
 │ id (UUID)                                   │
-│ email                                       │
 │ name                                        │
-│ picture                                     │
 │ created_at                                  │
+| updated_at                                  |
 └─────────────────────────────────────────────┘
                     │
                     │ 1:many
@@ -201,7 +186,7 @@ BACKEND_URL=http://localhost:8000
 
 ```bash
 # Terminal 1: Start PostgreSQL
-docker-compose up -d
+docker compose up -d
 
 # Terminal 2: Start backend
 cd backend
