@@ -173,9 +173,9 @@ export default function App() {
                 </div>
               </div>
               
-              {user && (
+              {user && user.name && (
                 <div className="border-t border-zinc-700 mt-3 pt-3">
-                  <p className="text-xs text-zinc-400">{user.email}</p>
+                  <p className="text-xs text-zinc-400">{user.name}</p>
                 </div>
               )}
             </div>

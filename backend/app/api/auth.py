@@ -27,7 +27,7 @@ oauth_states: dict[str, datetime] = {}
 
 
 @router.get("/google/login")
-async def google_login():
+async def google_login(request: Request):
     """Initiate Google OAuth flow"""
     state = generate_state_token()
     oauth_states[state] = datetime.utcnow()
@@ -38,13 +38,26 @@ async def google_login():
         if oauth_states[s] < cutoff:
             del oauth_states[s]
     
+    # Check if user is already logged in (to link Google to existing account)
+    session_token = request.cookies.get("session")
+    existing_user_id = None
+    if session_token:
+        payload = verify_session_token(session_token)
+        if payload:
+            existing_user_id = payload.get("user_id")
+            print(f"[Google] Existing session found, will link to user {existing_user_id}")
+    
+    # Store existing user ID in state for callback
+    if existing_user_id:
+        oauth_states[f"{state}_user"] = existing_user_id
+    
     params = {
         "client_id": settings.google_client_id,
         "redirect_uri": f"{settings.backend_url}/auth/google/callback",
         "response_type": "code",
         "scope": " ".join(settings.google_scopes),
-        "access_type": "offline",  # Get refresh token
-        "prompt": "consent",  # Force consent to get refresh token
+        "access_type": "offline",
+        "prompt": "consent",
         "state": state,
     }
     
@@ -72,6 +85,11 @@ async def google_callback(
     if state not in oauth_states:
         raise HTTPException(status_code=400, detail="Invalid state")
     del oauth_states[state]
+    
+    # Check if we have an existing user to link to
+    existing_user_id = oauth_states.pop(f"{state}_user", None)
+    if existing_user_id:
+        print(f"[Google] Will link to existing user {existing_user_id}")
     
     # Exchange code for tokens
     async with httpx.AsyncClient() as client:
@@ -109,24 +127,28 @@ async def google_callback(
     
     userinfo = userinfo_response.json()
     google_user_id = userinfo["id"]
-    email = userinfo["email"]
     name = userinfo.get("name")
-    picture = userinfo.get("picture")
     
-    # Find or create user
-    result = await db.execute(
-        select(User).where(User.email == email)
-    )
-    user = result.scalar_one_or_none()
+    print(f"[Google] User authenticated: {userinfo.get('email')} (Google ID: {google_user_id})")
     
+    # Find or create user - ONLY use session, never email lookup
+    user = None
+    
+    # If we have an existing logged-in user, link to that account
+    if existing_user_id:
+        result = await db.execute(
+            select(User).where(User.id == existing_user_id)
+        )
+        user = result.scalar_one_or_none()
+        if user:
+            print(f"[Google] Linking to existing user {user.id}")
+    
+    # No existing session = create new user
     if not user:
-        user = User(email=email, name=name, picture=picture)
+        user = User(name=name)
         db.add(user)
         await db.flush()
-    else:
-        # Update user info
-        user.name = name
-        user.picture = picture
+        print(f"[Google] Created new user: {user.id}")
     
     # Find or update OAuth connection
     result = await db.execute(
@@ -282,14 +304,12 @@ async def notion_callback(
     notion_user = owner.get("user", {}) if owner.get("type") == "user" else {}
     
     notion_user_id = notion_user.get("id", bot_id)
-    email = notion_user.get("person", {}).get("email") if notion_user.get("person") else None
     name = notion_user.get("name")
-    picture = notion_user.get("avatar_url")
     
-    print(f"[Notion] User authenticated: {email or name} (Notion ID: {notion_user_id})")
+    print(f"[Notion] User authenticated: {name} (Notion ID: {notion_user_id})")
     print(f"[Notion] Workspace: {workspace_name} ({workspace_id})")
     
-    # Find or create user
+    # Find or create user - ONLY use session, never email lookup
     user = None
     
     # If we have an existing logged-in user, link to that account
@@ -298,26 +318,15 @@ async def notion_callback(
             select(User).where(User.id == existing_user_id)
         )
         user = result.scalar_one_or_none()
+        if user:
+            print(f"[Notion] Linking to existing user {user.id}")
     
-    # Otherwise, try to find by email or create new
-    if not user and email:
-        result = await db.execute(
-            select(User).where(User.email == email)
-        )
-        user = result.scalar_one_or_none()
-    
+    # No existing session = create new user
     if not user:
-        # Create new user - use email if available, otherwise generate placeholder
-        user_email = email or f"notion_{notion_user_id}@placeholder.local"
-        user = User(email=user_email, name=name, picture=picture)
+        user = User(name=name)
         db.add(user)
         await db.flush()
-    else:
-        # Update user info if not already set
-        if not user.name and name:
-            user.name = name
-        if not user.picture and picture:
-            user.picture = picture
+        print(f"[Notion] Created new user: {user.id}")
     
     # Find or update OAuth connection
     result = await db.execute(
@@ -401,9 +410,7 @@ async def get_current_user(
     
     return {
         "id": str(user.id),
-        "email": user.email,
         "name": user.name,
-        "picture": user.picture,
         "connected_services": connected_providers,
     }
 
