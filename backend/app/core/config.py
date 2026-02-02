@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     
     # Security
-    secret_key: str = "dev-secret-key-change-in-production"
+    secret_key: str = ""
     encryption_key: str = ""  # Base64 encoded 32-byte key for Fernet
     
     # URLs
