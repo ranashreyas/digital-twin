@@ -32,11 +32,15 @@ async def google_login(request: Request):
     state = generate_state_token()
     oauth_states[state] = datetime.utcnow()
     
-    # Clean up old states (older than 10 minutes)
+    # Clean up old states (older than 10 minutes) - only check datetime values
     cutoff = datetime.utcnow() - timedelta(minutes=10)
     for s in list(oauth_states.keys()):
-        if oauth_states[s] < cutoff:
+        val = oauth_states[s]
+        if isinstance(val, datetime) and val < cutoff:
             del oauth_states[s]
+            # Also clean up associated user ID if exists
+            if f"{s}_user" in oauth_states:
+                del oauth_states[f"{s}_user"]
     
     # Check if user is already logged in (to link Google to existing account)
     session_token = request.cookies.get("session")
@@ -82,8 +86,15 @@ async def google_callback(
         raise HTTPException(status_code=400, detail="Missing code or state")
     
     # Verify state
+    print(f"[Google] Callback received, state={state[:20]}...")
+    print(f"[Google] Known states: {len([k for k in oauth_states.keys() if not k.endswith('_user')])}")
+    
     if state not in oauth_states:
-        raise HTTPException(status_code=400, detail="Invalid state")
+        print(f"[Google] ERROR: State not found! Server may have restarted during OAuth flow.")
+        raise HTTPException(
+            status_code=400, 
+            detail="Invalid state. The server may have restarted. Please try connecting again."
+        )
     del oauth_states[state]
     
     # Check if we have an existing user to link to
@@ -131,7 +142,7 @@ async def google_callback(
     
     print(f"[Google] User authenticated: {userinfo.get('email')} (Google ID: {google_user_id})")
     
-    # Find or create user - ONLY use session, never email lookup
+    # Find or create user - ONLY use session
     user = None
     
     # If we have an existing logged-in user, link to that account
@@ -160,7 +171,9 @@ async def google_callback(
     oauth_conn = result.scalar_one_or_none()
     
     token_expiry = datetime.utcnow() + timedelta(seconds=expires_in)
-    
+
+
+    #create a new connection or replace the existing one
     if not oauth_conn:
         oauth_conn = OAuthConnection(
             user_id=user.id,
@@ -211,11 +224,15 @@ async def notion_login(request: Request):
     state = generate_state_token()
     oauth_states[state] = datetime.utcnow()
     
-    # Clean up old states (older than 10 minutes)
+    # Clean up old states (older than 10 minutes) - only check datetime values
     cutoff = datetime.utcnow() - timedelta(minutes=10)
     for s in list(oauth_states.keys()):
-        if oauth_states[s] < cutoff:
+        val = oauth_states[s]
+        if isinstance(val, datetime) and val < cutoff:
             del oauth_states[s]
+            # Also clean up associated user ID if exists
+            if f"{s}_user" in oauth_states:
+                del oauth_states[f"{s}_user"]
     
     # Check if user is already logged in (to link Notion to existing account)
     session_token = request.cookies.get("session")
@@ -258,8 +275,15 @@ async def notion_callback(
         raise HTTPException(status_code=400, detail="Missing code or state")
     
     # Verify state
+    print(f"[Notion] Callback received, state={state[:20]}...")
+    print(f"[Notion] Known states: {len([k for k in oauth_states.keys() if not k.endswith('_user')])}")
+    
     if state not in oauth_states:
-        raise HTTPException(status_code=400, detail="Invalid state")
+        print(f"[Notion] ERROR: State not found! Server may have restarted during OAuth flow.")
+        raise HTTPException(
+            status_code=400, 
+            detail="Invalid state. The server may have restarted. Please try connecting again."
+        )
     del oauth_states[state]
     
     # Check if we have an existing user to link to
