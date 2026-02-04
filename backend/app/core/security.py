@@ -1,47 +1,84 @@
 import base64
 import hashlib
+import os
 import secrets
-from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from itsdangerous import URLSafeTimedSerializer
 
 from app.core.config import get_settings
 
 settings = get_settings()
 
-# Cache the fernet instance so it's consistent
-_fernet_instance = None
+# Cache the AES-GCM key so it's consistent
+_aes_key: bytes | None = None
+
+# AES-GCM constants
+NONCE_SIZE = 12  # 96 bits - recommended for GCM
+KEY_SIZE = 32    # 256 bits
 
 
-def get_fernet() -> Fernet:
-    """Get Fernet instance for token encryption"""
-    global _fernet_instance
+def get_aes_key() -> bytes:
+    """Get AES-256 key for token encryption"""
+    global _aes_key
     
-    if _fernet_instance is not None:
-        return _fernet_instance
+    if _aes_key is not None:
+        return _aes_key
     
     if settings.encryption_key:
-        key = settings.encryption_key.encode()
+        # If provided, hash it to ensure exactly 32 bytes
+        _aes_key = hashlib.sha256(settings.encryption_key.encode()).digest()
     else:
         # Derive a stable key from SECRET_KEY for development
         # This ensures the key is consistent across restarts
-        key = base64.urlsafe_b64encode(
-            hashlib.sha256(settings.secret_key.encode()).digest()
-        )
+        _aes_key = hashlib.sha256(settings.secret_key.encode()).digest()
     
-    _fernet_instance = Fernet(key)
-    return _fernet_instance
+    return _aes_key
 
 
 def encrypt_token(token: str) -> str:
-    """Encrypt an OAuth token for storage"""
-    fernet = get_fernet()
-    return fernet.encrypt(token.encode()).decode()
+    """
+    Encrypt an OAuth token using AES-256-GCM.
+    
+    Format: base64(nonce || ciphertext || tag)
+    - nonce: 12 bytes (unique per encryption)
+    - ciphertext: variable length
+    - tag: 16 bytes (authentication tag, appended by AESGCM)
+    """
+    key = get_aes_key()
+    aesgcm = AESGCM(key)
+    
+    # Generate random nonce (MUST be unique per encryption)
+    nonce = os.urandom(NONCE_SIZE)
+    
+    # Encrypt (returns ciphertext + 16-byte auth tag)
+    ciphertext = aesgcm.encrypt(nonce, token.encode(), None)
+    
+    # Combine: nonce + ciphertext (which includes tag)
+    encrypted = nonce + ciphertext
+    
+    return base64.urlsafe_b64encode(encrypted).decode()
 
 
 def decrypt_token(encrypted_token: str) -> str:
-    """Decrypt an OAuth token from storage"""
-    fernet = get_fernet()
-    return fernet.decrypt(encrypted_token.encode()).decode()
+    """
+    Decrypt an OAuth token encrypted with AES-256-GCM.
+    
+    Raises exception if authentication fails (tampered data).
+    """
+    key = get_aes_key()
+    aesgcm = AESGCM(key)
+    
+    # Decode from base64
+    encrypted = base64.urlsafe_b64decode(encrypted_token.encode())
+    
+    # Extract nonce and ciphertext
+    nonce = encrypted[:NONCE_SIZE]
+    ciphertext = encrypted[NONCE_SIZE:]
+    
+    # Decrypt and verify (raises InvalidTag if tampered)
+    plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+    
+    return plaintext.decode()
 
 
 def get_serializer() -> URLSafeTimedSerializer:

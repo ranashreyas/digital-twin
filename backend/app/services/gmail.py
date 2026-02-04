@@ -23,13 +23,15 @@ async def get_emails(
 ) -> list[dict[str, Any]]:
     """
     Get emails with optional search query and date range.
+    Returns full email threads - if any message in a thread matches the query,
+    the entire thread (all replies) is returned.
     
     Args:
         query: Search query (e.g., 'from:john', 'subject:meeting', 'Createbase').
                Empty string returns all emails in date range.
         start_date: Start date in YYYY-MM-DD format (defaults to 30 days ago)
         end_date: End date in YYYY-MM-DD format (defaults to today)
-        max_results: Maximum number of emails to return.
+        max_results: Maximum number of threads to return.
     """
     access_token = await get_valid_google_token(user_id, db)
     
@@ -95,37 +97,79 @@ async def get_emails(
     data = response.json()
     messages = data.get("messages", [])
     
-    print(f"[Gmail] Found {len(messages)} messages")
+    print(f"[Gmail] Found {len(messages)} matching messages")
     
-    emails = []
+    # Collect unique thread IDs from matching messages
+    thread_ids = list(dict.fromkeys(msg.get("threadId") for msg in messages if msg.get("threadId")))
+    print(f"[Gmail] Fetching {len(thread_ids)} unique threads")
+    
+    # Fetch full threads for each unique thread ID
+    threads = []
     async with httpx.AsyncClient() as client:
-        for msg in messages:
-            # Get full message details
-            msg_response = await client.get(
-                f"{GMAIL_API_BASE}/users/me/messages/{msg['id']}",
+        for thread_id in thread_ids:
+            thread_response = await client.get(
+                f"{GMAIL_API_BASE}/users/me/threads/{thread_id}",
                 headers={"Authorization": f"Bearer {access_token}"},
-                params={"format": "metadata", "metadataHeaders": ["From", "Subject", "Date"]},
+                params={"format": "full"},
             )
             
-            if msg_response.status_code != 200:
+            if thread_response.status_code != 200:
+                print(f"[Gmail] Failed to fetch thread {thread_id}: {thread_response.status_code}")
                 continue
             
-            msg_data = msg_response.json()
-            headers = {
-                h["name"]: h["value"] 
-                for h in msg_data.get("payload", {}).get("headers", [])
-            }
+            thread_data = thread_response.json()
+            thread_messages = []
             
-            emails.append({
-                "id": msg["id"],
-                "thread_id": msg.get("threadId"),
-                "from": headers.get("From"),
-                "subject": headers.get("Subject"),
-                "date": headers.get("Date"),
-                "snippet": msg_data.get("snippet"),
+            for msg in thread_data.get("messages", []):
+                headers = {
+                    h["name"]: h["value"] 
+                    for h in msg.get("payload", {}).get("headers", [])
+                }
+                
+                # Try to get plain text body
+                body = ""
+                payload = msg.get("payload", {})
+                
+                if "body" in payload and payload["body"].get("data"):
+                    try:
+                        body = base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8")
+                    except Exception:
+                        pass
+                elif "parts" in payload:
+                    for part in payload["parts"]:
+                        if part.get("mimeType") == "text/plain" and part.get("body", {}).get("data"):
+                            try:
+                                body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8")
+                            except Exception:
+                                pass
+                            break
+                
+                thread_messages.append({
+                    "id": msg.get("id"),
+                    "from": headers.get("From"),
+                    "to": headers.get("To"),
+                    "date": headers.get("Date"),
+                    "snippet": msg.get("snippet"),
+                    "body": body,
+                })
+            
+            # Get subject from first message
+            first_msg_headers = {}
+            if thread_data.get("messages"):
+                first_msg_headers = {
+                    h["name"]: h["value"] 
+                    for h in thread_data["messages"][0].get("payload", {}).get("headers", [])
+                }
+            
+            threads.append({
+                "thread_id": thread_id,
+                "subject": first_msg_headers.get("Subject"),
+                "message_count": len(thread_messages),
+                "messages": thread_messages,
             })
     
-    return emails
+    print(f"[Gmail] Returning {len(threads)} threads with all messages")
+    return threads
 
 
 async def get_email_content(

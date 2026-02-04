@@ -9,9 +9,12 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from openai import AsyncOpenAI
 
+from sqlalchemy import select
+
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.security import verify_session_token
+from app.models.user import User
 from app.services.google_calendar import (
     get_events,
     create_event,
@@ -19,7 +22,7 @@ from app.services.google_calendar import (
     add_attendees_to_event,
     delete_event,
 )
-from app.services.gmail import get_emails, get_email_content, get_email_thread
+from app.services.gmail import get_emails
 from app.services.notion import (
     search_pages as search_notion_pages,
     get_page_content as get_notion_page_content,
@@ -84,13 +87,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_emails",
-            "description": "Search emails with a query. Use specific, targeted queries based on what you've learned (e.g., company name, person's name). Default date range is last 30 days.",
+            "description": "Search emails and return FULL THREADS. If ANY message in a thread matches the query, the ENTIRE conversation thread (all replies) is returned with full message bodies. Use specific, targeted queries (e.g., company name, person's name). Default date range is last 30 days.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Search query - empty string for all emails, or use specific terms like company names, person names, or topics (e.g., 'Amazon', 'from:john', 'interview'). Be specific!",
+                        "description": "Search query - use LEAST SPECIFIC form: strip domains ('Viven.ai' → 'Viven'), use core noun only ('technical round' → 'round'). Single word preferred. Empty string returns all.",
                     },
                     "start_date": {
                         "type": "string",
@@ -102,40 +105,6 @@ TOOLS = [
                     },
                 },
                 "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_email_content",
-            "description": "Get the full content of a specific email by its ID. Use get_emails first to find email IDs.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "message_id": {
-                        "type": "string",
-                        "description": "The ID of the email to retrieve",
-                    },
-                },
-                "required": ["message_id"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_email_thread",
-            "description": "Get an entire email thread/conversation (all back-and-forth messages). Use get_emails first to find the thread_id.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "thread_id": {
-                        "type": "string",
-                        "description": "The thread ID of the email conversation",
-                    },
-                },
-                "required": ["thread_id"],
             },
         },
     },
@@ -264,7 +233,7 @@ TOOLS = [
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Search query (leave empty to get recent pages)",
+                        "description": "Search query - use LEAST SPECIFIC form: strip domains ('Viven.ai' → 'Viven'), use core noun only. Single word preferred. Empty = recent pages.",
                     },
                     "max_results": {
                         "type": "integer",
@@ -404,9 +373,8 @@ You have access to their connected services (Google Calendar, Gmail, Notion) and
 
 GOOGLE CALENDAR & GMAIL:
 - get_calendar_events returns ALL events in a date range - YOU must filter/analyze results
-- get_emails returns ALL emails in a date range - YOU must filter/analyze results
+- get_emails returns FULL THREADS: if ANY message matches the query, the ENTIRE conversation (all replies) is returned with full message bodies
 - Create, edit, share, and delete calendar events
-- Get full email content or entire email threads
 
 NOTION (if connected):
 - Search for pages
@@ -420,7 +388,9 @@ NOTION (if connected):
 
 CALENDAR: get_calendar_events returns ALL events in the date range. YOU analyze the results.
 
-EMAIL: get_emails requires a search query. Use SPECIFIC, TARGETED queries.
+EMAIL: get_emails returns FULL CONVERSATION THREADS. If any message in a thread matches the query, 
+you get the ENTIRE thread with all replies and full message bodies. This means you can see the 
+complete back-and-forth conversation without needing additional tool calls. Use SPECIFIC, TARGETED queries.
 
 === SMART FOLLOW-UP SEARCHES - CRITICAL ===
 
@@ -438,11 +408,23 @@ BAD Example (what NOT to do):
 2. get_emails(query="interview") ← TOO GENERIC, returns unrelated job alerts
 3. Report a bunch of irrelevant emails
 
-RULES FOR EMAIL SEARCHES:
-- Use SPECIFIC terms: company names, person names, project names
-- Prefer names/entities over generic words like "interview", "meeting", "project"
-- If calendar event has attendees, search for their name or email domain
+RULES FOR ALL SEARCHES (Email, Calendar, Notion):
+- Use the LEAST SPECIFIC, SIMPLEST form of search terms
+- Strip domains, prefixes, suffixes: "Viven.ai" → search "Viven", "Amazon.com" → search "Amazon"
+- Use only the core noun: "technical round" → search "round", "final interview" → search "interview"
+- For names: "John Smith" → try "John" or "Smith" (single word)
+- Do NOT use OR operators - they don't work correctly
+- NEVER combine multiple words unless absolutely necessary
+- Prefer entity names (company, person) over action words (meeting, project, call)
+- If calendar event has attendees, extract the domain: "arsh@createbase.com" → search "createbase"
 - Default date range is 30 days ago to today - widen if needed for historical context
+
+EXAMPLES of query simplification:
+- "Viven.ai interview" → search "Viven"
+- "technical phone screen" → search "screen" or "phone"
+- "Amazon final round" → search "Amazon"
+- "meeting with John" → search "John"
+- "Q1 planning session" → search "planning" or "Q1"
 
 === MISSING INFORMATION ===
 
@@ -549,28 +531,8 @@ async def execute_tool(
             )
             if not emails:
                 query = arguments.get("query", "")
-                return f"No emails found matching '{query}'. Try a different search term or wider date range."
+                return f"No email threads found matching '{query}'. Try a different search term or wider date range."
             return json.dumps(emails, indent=2)
-        
-        elif tool_name == "get_email_content":
-            email = await get_email_content(
-                user_id=user_id,
-                db=db,
-                message_id=arguments["message_id"],
-            )
-            if not email:
-                return "Failed to get email. Check the message ID or ensure Gmail is connected."
-            return json.dumps(email, indent=2)
-        
-        elif tool_name == "get_email_thread":
-            thread = await get_email_thread(
-                user_id=user_id,
-                db=db,
-                thread_id=arguments["thread_id"],
-            )
-            if not thread:
-                return "Failed to get email thread. Check the thread ID or ensure Gmail is connected."
-            return json.dumps(thread, indent=2)
         
         elif tool_name == "create_calendar_event":
             event = await create_event(
@@ -747,8 +709,37 @@ async def chat(
         client = AsyncOpenAI(api_key=settings.openai_api_key)
         
         has_connections = user_id is not None
-        system_prompt = SYSTEM_PROMPT_WITH_TOOLS if has_connections else SYSTEM_PROMPT_NO_TOOLS
+        base_system_prompt = SYSTEM_PROMPT_WITH_TOOLS if has_connections else SYSTEM_PROMPT_NO_TOOLS
         tools_to_use = TOOLS if has_connections else None
+        
+        # Fetch user's name to exclude from searches
+        user_name = None
+        excluded_terms = []
+        if user_id:
+            result = await db.execute(select(User).where(User.id == user_id))
+            user = result.scalar_one_or_none()
+            if user and user.name:
+                user_name = user.name
+                # Split name into parts (e.g., "Shreyas Rana" -> ["Shreyas", "Rana"])
+                excluded_terms = [part.strip() for part in user_name.split() if len(part.strip()) > 1]
+                print(f"[CHAT] User name: {user_name}")
+                print(f"[CHAT] Excluded search terms: {excluded_terms}")
+        
+        # Dynamically add user's name exclusion to system prompt
+        if excluded_terms:
+            exclusion_note = f"""
+
+=== USER IDENTITY - NEVER SEARCH FOR THESE TERMS ===
+
+The current user's name is: {user_name}
+NEVER use any of these terms in search queries (they return too many results):
+{', '.join(f'"{term}"' for term in excluded_terms)}
+
+Instead, search for OTHER entities: company names, other people's names, project names, etc.
+"""
+            system_prompt = base_system_prompt + exclusion_note
+        else:
+            system_prompt = base_system_prompt
         
         print(f"[CHAT] Has connections: {has_connections}")
         print(f"[CHAT] Tools available: {len(TOOLS) if tools_to_use else 0}")
